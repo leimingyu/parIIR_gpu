@@ -18,7 +18,7 @@ Leiming Yu
   organization={ACM}
 }
 ```
-or
+and
 
 ```
 @inproceedings{mukherjee2015exploring,
