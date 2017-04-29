@@ -1,11 +1,21 @@
-# parIIR_gpu
-Parallel IIR on GPU
+# About 
+GPU implementation of Parallel IIR
 
 # Author
 Leiming Yu
 * Email: ylm@ece.neu.edu
 * Twitter: @yu_leiming
 * Blog: http://www1.coe.neu.edu/~ylm/
+
+	 ____ ____ ____ ____ ____ ____ ____ ____ 
+	||P |||o |||s |||i |||t |||i |||v |||e ||
+	||__|||__|||__|||__|||__|||__|||__|||__||
+	|/__\|/__\|/__\|/__\|/__\|/__\|/__\|/__\|
+	 ____ ____ ____ ____ ____ ____ ____ ____ 
+	||T |||h |||i |||n |||k |||i |||n |||g ||
+	||__|||__|||__|||__|||__|||__|||__|||__||
+	|/__\|/__\|/__\|/__\|/__\|/__\|/__\|/__\|
+
 
 # Citation is appriciated.
 ```
