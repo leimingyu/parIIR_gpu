@@ -57,9 +57,9 @@ __global__ void GpuParIIR (float *x, int len, float c, float *y)
 			unew = sm[jj] - dot(u, DSEC[tid]);				
 			u = make_float2(unew, u.x);
 			y0 = dot(u, NSEC[tid]);
-		
+
 			// sum v across current block
-			#pragma unroll
+#pragma unroll
 			for(kk=1; kk<32; kk<<=1)  
 			{
 				y0 += __shfl_xor(y0, kk, 32); 
@@ -91,7 +91,7 @@ __global__ void GpuParIIR (float *x, int len, float c, float *y)
 
 			}
 		}
-	
+
 	}
 
 }
@@ -99,6 +99,12 @@ __global__ void GpuParIIR (float *x, int len, float c, float *y)
 
 int main(int argc, char *argv[])
 {
+
+	int devid = 0;
+	cudaDeviceProp prop;
+	cudaGetDeviceProperties(&prop, devid);
+	printf("GPU Device: %s\n\n", prop.name);
+
 	if(argc != 2){
 		printf("Missing the length of input!\nUsage: ./parIIR Len\n");
 		exit(EXIT_FAILURE);	
@@ -170,9 +176,9 @@ int main(int argc, char *argv[])
 
 	// copy data to constant memory
 	cudaMemcpyToSymbol(NSEC, vns, sizeof(float2)*ROWS, 0,
-			           cudaMemcpyHostToDevice);
+			cudaMemcpyHostToDevice);
 	cudaMemcpyToSymbol(DSEC, vds, sizeof(float2)*ROWS, 0, 
-			           cudaMemcpyHostToDevice);
+			cudaMemcpyHostToDevice);
 
 	cudaMemcpy(d_x, x, bytes, cudaMemcpyHostToDevice);
 
@@ -186,7 +192,7 @@ int main(int argc, char *argv[])
 
 	// kernel
 	GpuParIIR <ROWS>
-    <<< channels, ROWS, sizeof(float) * (ROWS + warpnum) >>> (d_x, len, c, d_y);
+		<<< channels, ROWS, sizeof(float) * (ROWS + warpnum) >>> (d_x, len, c, d_y);
 
 #if TIMING
 	// end timer
@@ -263,7 +269,7 @@ void check(float *cpu, float *gpu, int len, int tot_chn)
 	uint start;
 	int success = 1;
 
-	
+
 	for(chn=0; chn<tot_chn; chn++)
 	{
 		start = chn * len;
