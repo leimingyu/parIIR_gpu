@@ -204,7 +204,8 @@ int main(int argc, char *argv[])
 
 	float et;
 	cudaEventElapsedTime(&et, start, stop);
-	printf ("GPU Kernel Runtime = %f (ms)\n", et);
+	// printf ("GPU Kernel Runtime = %f (ms)\n", et);
+	printf ("GPU Runtime / channel = %.5f (ms)\n", et / (float)channels);
 #endif
 
 
@@ -273,7 +274,7 @@ void cpu_pariir(float *x, float *y, float *ns, float *dsec, float c, int len)
 	mtime/=1000;
 	mtime+=seconds*1000;
 
-	printf("CPU Runtime = %.3f (ms)\n", mtime);
+	printf("CPU Runtime / channel = %.5f (ms)\n", mtime);
 
 
 	free(ds);
@@ -305,7 +306,7 @@ void check(float *cpu, float *gpu, int len, int tot_chn)
 	}
 
 	if(success)
-		puts("Passed!");
+		puts("\nVerification Passed!");
 
 #if DEB
 	for(i=0; i<len; i++)
