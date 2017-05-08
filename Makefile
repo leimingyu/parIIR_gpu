@@ -8,6 +8,7 @@ OS_TYPE = $(shell uname -m | sed -e "s/i.86/32/" -e "s/x86_64/64/" -e "s/armv7l/
 GCC ?= g++
 NVC = $(CUDA_DIR)/bin/nvcc  -ccbin $(GCC)
 
+
 NVCC_FLAGS   :=	
 NVCC_FLAGS   += -O2 
 NVCC_FLAGS   += -m${OS_TYPE}
@@ -22,9 +23,10 @@ else
   NV_LIB = -L$(CUDA_DIR)/lib
 endif
 
-LIB_LINKR = -lcudart
+LIBS ?= -lcudart -lm -lgomp
 
-SMS ?= 30 35 37 50  52
+#SMS ?= 30 35 50 52
+SMS ?= 52 
 
 ifeq ($(GENCODE_FLAGS),)
   $(foreach sm,$(SMS),$(eval GENCODE_FLAGS += -gencode arch=compute_$(sm),code=sm_$(sm)))
@@ -38,7 +40,7 @@ all: build
 build: parIIR 
 
 parIIR: parIIR.cu
-	$(NVC) $(NV_INC) $(NV_LIB) $(NVCC_FLAGS) $(GENCODE_FLAGS) -o $@ $^ $(LIB_LINKER)
+	$(NVC) $(NV_INC) $(NV_LIB) $(NVCC_FLAGS) $(GENCODE_FLAGS) $^ -o $@ $(LIBS)
 
 run: build
 	./parIIR

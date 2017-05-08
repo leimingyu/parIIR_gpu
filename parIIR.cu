@@ -1,6 +1,8 @@
 // System includes
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
+#include <sys/time.h>
 
 // CUDA runtime
 #include <cuda_runtime.h>
@@ -10,12 +12,12 @@
 #include <helper_cuda.h>
 #include <helper_math.h> 
 
-#define ROWS 256  // num of parallel subfilters
+#define BIQUADS 256  // num of parallel subfilters
 #define DEB 0	  // compare cpu and gpu results
 #define TIMING 1  // measure the kernel execution time
 
-__constant__ float2 NSEC[ROWS];
-__constant__ float2 DSEC[ROWS];
+__constant__ float2 NSEC[BIQUADS];
+__constant__ float2 DSEC[BIQUADS];
 
 // Parallel IIR: CPU 
 void cpu_pariir(float *x, float *y, float *ns, float *dsec, float c, int len);
@@ -28,7 +30,7 @@ template <int blockSize>
 __global__ void GpuParIIR (float *x, int len, float c, float *y)
 {
 	extern __shared__ float sm[];
-	float *sp = &sm[ROWS];
+	float *sp = &sm[BIQUADS];
 
 	int tid = threadIdx.x;
 	//int id = __mul24(blockIdx.x, blockDim.x) + threadIdx.x;
@@ -43,16 +45,16 @@ __global__ void GpuParIIR (float *x, int len, float c, float *y)
 	float unew;
 	float y0;
 
-	// block size : ROWS
+	// block size : BIQUADS
 	// each thread fetch input x to shared memory
-	for(ii=0; ii<len; ii+=ROWS)
+	for(ii=0; ii<len; ii+=BIQUADS)
 	{
 		sm[tid] = x[tid + ii];	
 
 		__syncthreads();
 
 		// go through each x in shared memory 
-		for(jj=0; jj<ROWS; jj++)	
+		for(jj=0; jj<BIQUADS; jj++)	
 		{
 			unew = sm[jj] - dot(u, DSEC[tid]);				
 			u = make_float2(unew, u.x);
@@ -111,7 +113,8 @@ int main(int argc, char *argv[])
 	}
 
 	int i, j;
-	int channels = 64;
+	//int channels = 64;
+	int channels = 128;
 
 	int len = atoi(argv[1]); // signal length 
 
@@ -133,16 +136,16 @@ int main(int argc, char *argv[])
 
 	// coefficients
 	float *nsec, *dsec;
-	nsec = (float*) malloc(sizeof(float) * 2 * ROWS); // numerator
-	dsec = (float*) malloc(sizeof(float) * 3 * ROWS); // denominator
+	nsec = (float*) malloc(sizeof(float) * 2 * BIQUADS); // numerator
+	dsec = (float*) malloc(sizeof(float) * 3 * BIQUADS); // denominator
 
-	for(i=0; i<ROWS; i++){
+	for(i=0; i<BIQUADS; i++){
 		for(j=0; j<3; j++){
 			dsec[i*3 + j] = 0.00002f;
 		}
 	}
 
-	for(i=0; i<ROWS; i++){
+	for(i=0; i<BIQUADS; i++){
 		for(j=0; j<2; j++){
 			nsec[i*2 + j] = 0.00005f;
 		}
@@ -152,14 +155,14 @@ int main(int argc, char *argv[])
 	cpu_pariir(x, cpu_y, nsec, dsec, c, len);
 
 	int warpsize = 32;
-	int warpnum = ROWS/warpsize;
+	int warpnum = BIQUADS/warpsize;
 
 	// vectorize the coefficients
 	float2 *vns, *vds;
-	vns = (float2*) malloc(sizeof(float2) * ROWS);
-	vds = (float2*) malloc(sizeof(float2) * ROWS); 
+	vns = (float2*) malloc(sizeof(float2) * BIQUADS);
+	vds = (float2*) malloc(sizeof(float2) * BIQUADS); 
 
-	for(i=0; i<ROWS; i++){
+	for(i=0; i<BIQUADS; i++){
 		vds[i] = make_float2(0.00002f);
 		vns[i] = make_float2(0.00005f);
 	}
@@ -175,9 +178,9 @@ int main(int argc, char *argv[])
 	cudaMalloc((void **)&d_y, bytes * channels);
 
 	// copy data to constant memory
-	cudaMemcpyToSymbol(NSEC, vns, sizeof(float2)*ROWS, 0,
+	cudaMemcpyToSymbol(NSEC, vns, sizeof(float2)*BIQUADS, 0,
 			cudaMemcpyHostToDevice);
-	cudaMemcpyToSymbol(DSEC, vds, sizeof(float2)*ROWS, 0, 
+	cudaMemcpyToSymbol(DSEC, vds, sizeof(float2)*BIQUADS, 0, 
 			cudaMemcpyHostToDevice);
 
 	cudaMemcpy(d_x, x, bytes, cudaMemcpyHostToDevice);
@@ -191,8 +194,8 @@ int main(int argc, char *argv[])
 #endif
 
 	// kernel
-	GpuParIIR <ROWS>
-		<<< channels, ROWS, sizeof(float) * (ROWS + warpnum) >>> (d_x, len, c, d_y);
+	GpuParIIR <BIQUADS>
+		<<< channels, BIQUADS, sizeof(float) * (BIQUADS + warpnum) >>> (d_x, len, c, d_y);
 
 #if TIMING
 	// end timer
@@ -201,7 +204,7 @@ int main(int argc, char *argv[])
 
 	float et;
 	cudaEventElapsedTime(&et, start, stop);
-	printf ("ElapsetTime = %f (s)\n", et/1000.f);
+	printf ("GPU Kernel Runtime = %f (ms)\n", et);
 #endif
 
 
@@ -230,23 +233,28 @@ void cpu_pariir(float *x, float *y, float *ns, float *dsec, float c, int len)
 	float out;
 	float unew;
 
-	float *ds = (float*) malloc(sizeof(float) * ROWS * 2);	
+	float *ds = (float*) malloc(sizeof(float) * BIQUADS * 2);	
 
 	// internal state
-	float *u = (float*) malloc(sizeof(float) * ROWS * 2);
-	memset(u, 0 , sizeof(float) * ROWS * 2);
+	float *u = (float*) malloc(sizeof(float) * BIQUADS * 2);
+	memset(u, 0 , sizeof(float) * BIQUADS * 2);
 
-	for(i=0; i<ROWS; i++)
+	for(i=0; i<BIQUADS; i++)
 	{
 		ds[i * 2]     = dsec[3 * i + 1];
 		ds[i * 2 + 1] = dsec[3 * i + 2];
 	}
 
+	long seconds, useconds;
+	double mtime;
+	struct timeval cpu_start, cpu_end;
+	gettimeofday(&cpu_start, NULL);
+
 	for(i=0; i<len; i++)
 	{
 		out = c * x[i];
 
-		for(j=0; j<ROWS; j++)
+		for(j=0; j<BIQUADS; j++)
 		{
 			unew = x[i] - (ds[j*2] * u[j*2] + ds[j*2+1] * u[j*2+1]);
 			u[j*2+1] = u[j * 2];
@@ -256,6 +264,17 @@ void cpu_pariir(float *x, float *y, float *ns, float *dsec, float c, int len)
 
 		y[i] = out;
 	}
+
+	gettimeofday(&cpu_end, NULL);
+
+	seconds  = cpu_end.tv_sec  - cpu_start.tv_sec;
+	useconds = cpu_end.tv_usec - cpu_start.tv_usec;
+	mtime = useconds;
+	mtime/=1000;
+	mtime+=seconds*1000;
+
+	printf("CPU Runtime = %.3f (ms)\n", mtime);
+
 
 	free(ds);
 	free(u);
