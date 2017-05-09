@@ -26,20 +26,36 @@ void cpu_pariir(float *x, float *y, float *ns, float *dsec, float c, int len);
 void check(float *cpu, float *gpu, int len, int tot_chn);
 
 
-template <int blockSize>
-__global__ void GpuParIIR (float *x, int len, float c, float *y)
+__inline__ __device__
+float warp_reduce_sum(float val) 
+{
+	val += __shfl_down(val, 16, 32);
+	val += __shfl_down(val,  8, 32);
+	val += __shfl_down(val,  4, 32);
+	val += __shfl_down(val,  2, 32);
+	val += __shfl_down(val,  1, 32);
+	return val;
+}
+
+//----------------------------------------------------------------------------//
+// Notes:  
+//----------------------------------------------------------------------------//
+__global__ void GpuParIIR (float *x, int len, float c, float *y, int warpNum)
 {
 	extern __shared__ float sm[];
+
 	float *sp = &sm[BIQUADS];
 
 	int tid = threadIdx.x;
 	//int id = __mul24(blockIdx.x, blockDim.x) + threadIdx.x;
 
-	// & 0x20
-	int lane_id = tid % 32; // warp size 32 for +3.5 device
-	int warp_id = tid / 32;
+	//compute lane_id = tid % 32 
+	int lane_id = tid & 0x20;
 
-	int ii, jj, kk;
+	// compute warp_id tid / 32;
+	int warp_id = tid >> 5;
+
+	int ii, jj;
 
 	float2 u = make_float2(0.0f);
 	float unew;
@@ -60,37 +76,21 @@ __global__ void GpuParIIR (float *x, int len, float c, float *y)
 			u = make_float2(unew, u.x);
 			y0 = dot(u, NSEC[tid]);
 
-			// sum v across current block
-#pragma unroll
-			for(kk=1; kk<32; kk<<=1)  
-			{
-				y0 += __shfl_xor(y0, kk, 32); 
-			}
 
-			if(lane_id == 0)
-			{
-				sp[warp_id] = y0;
-			}
+			y0 = warp_reduce_sum(y0);
+
+			if(lane_id == 0) sp[warp_id] = y0;
 
 			__syncthreads();
 
-			if(blockSize == 256 && warp_id == 0)
-			{
-				if(lane_id < 8)
-				{
-					float warp_sum = sp[lane_id];
+			float val = (tid < warpNum) ? sp[lane_id] : 0.f;
 
-					warp_sum += __shfl_xor(warp_sum, 1, 32);  // ? 32
-					warp_sum += __shfl_xor(warp_sum, 2, 32);  // ? 32
-					warp_sum += __shfl_xor(warp_sum, 4, 32);  // ? 32
+			if (warp_id == 0) val = warp_reduce_sum(val);
 
-					if(lane_id == 0){
-						// channel starting postion: blockId.x * len
-						uint gid = __mul24(blockIdx.x , len) + ii + jj;
-						y[gid] = warp_sum + sm[jj] * c;	
-					}
-				}
-
+			if(tid == 0){
+				// channel starting postion: blockId.x * len
+				uint gid = __mul24(blockIdx.x , len) + ii + jj;
+				y[gid] = val + sm[jj] * c;	
 			}
 		}
 
@@ -113,8 +113,31 @@ int main(int argc, char *argv[])
 	}
 
 	int i, j;
-	//int channels = 64;
-	int channels = 128;
+
+	int channels = 64;
+
+	const int blksize = 256;
+
+	if(blksize > BIQUADS) {
+		printf("Error!The block size %d is larger than %d biquads!\n",
+				blksize, BIQUADS);
+		exit(EXIT_FAILURE);	
+	}
+
+	if( (blksize % 32 != 0) || (BIQUADS % 32) != 0) {
+		printf("Error! Either block size (%d) and biquads (%d) should be"
+				"multiples of warp size (32)\n",
+				blksize, BIQUADS);
+		exit(EXIT_FAILURE);	
+	}
+
+	if ((BIQUADS % blksize) != 0) {
+		printf("Error! BIQUADS (%d) should be evenly divided by block size (%d)!\n",
+				BIQUADS, blksize);
+		exit(EXIT_FAILURE);	
+	}
+
+
 
 	int len = atoi(argv[1]); // signal length 
 
@@ -139,15 +162,19 @@ int main(int argc, char *argv[])
 	nsec = (float*) malloc(sizeof(float) * 2 * BIQUADS); // numerator
 	dsec = (float*) malloc(sizeof(float) * 3 * BIQUADS); // denominator
 
+	// denu
 	for(i=0; i<BIQUADS; i++){
 		for(j=0; j<3; j++){
-			dsec[i*3 + j] = 0.00002f;
+			//dsec[i*3 + j] = 0.00002f;
+			dsec[i*3 + j] = 0.02f;
 		}
 	}
 
+	// numerator : read-only
 	for(i=0; i<BIQUADS; i++){
 		for(j=0; j<2; j++){
-			nsec[i*2 + j] = 0.00005f;
+			//nsec[i*2 + j] = 0.00005f;
+			nsec[i*2 + j] = 0.05f;
 		}
 	}
 
@@ -155,7 +182,8 @@ int main(int argc, char *argv[])
 	cpu_pariir(x, cpu_y, nsec, dsec, c, len);
 
 	int warpsize = 32;
-	int warpnum = BIQUADS/warpsize;
+	//int warpnum = BIQUADS/warpsize;
+	int warpNum = blksize / warpsize;
 
 	// vectorize the coefficients
 	float2 *vns, *vds;
@@ -163,8 +191,11 @@ int main(int argc, char *argv[])
 	vds = (float2*) malloc(sizeof(float2) * BIQUADS); 
 
 	for(i=0; i<BIQUADS; i++){
-		vds[i] = make_float2(0.00002f);
-		vns[i] = make_float2(0.00005f);
+		//vds[i] = make_float2(0.00002f);
+		//vns[i] = make_float2(0.00005f);
+
+		vds[i] = make_float2(0.02f);
+		vns[i] = make_float2(0.05f);
 	}
 
 	// timer
@@ -194,8 +225,7 @@ int main(int argc, char *argv[])
 #endif
 
 	// kernel
-	GpuParIIR <BIQUADS>
-		<<< channels, BIQUADS, sizeof(float) * (BIQUADS + warpnum) >>> (d_x, len, c, d_y);
+	GpuParIIR <<< channels, blksize, sizeof(float) * (BIQUADS + warpNum) >>> (d_x, len, c, d_y, warpNum);
 
 #if TIMING
 	// end timer
@@ -299,6 +329,7 @@ void check(float *cpu, float *gpu, int len, int tot_chn)
 			if(cpu[i] - gpu[i + start] > 0.0001)	
 			{
 				puts("Failed!");
+				printf("cpu %f \t gpu %f\n", cpu[i], gpu[i + start]);
 				success = 0;
 				break;
 			}
